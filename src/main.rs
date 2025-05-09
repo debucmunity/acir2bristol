@@ -2,13 +2,20 @@ use acir::circuit::opcodes::*;
 use acir::circuit::*;
 use acir::native_types::*;
 use acir_field::*;
+use serde::Serialize;
 
+use std::path::Path;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use flate2::read::GzDecoder;
+use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::io::{Write, Cursor};
-use std::fs::File;
+use std::fs;
+use std::fs::*;
+use std::io::{BufRead, Read, BufReader, Cursor, Write};
 
-use bristol_circuit::{Gate, CircuitInfo, IOInfo, BristolCircuit};
+use bristol_circuit::{BristolCircuit, CircuitInfo, Gate, IOInfo};
 use serde_json::json;
 
 use boolify::boolify;
@@ -19,7 +26,7 @@ fn bristol_translator<F: AcirField>(circuit: &Circuit<F>) -> BristolCircuit {
     let mut total_wires = 0;
 
     let mut gate: Vec<Vec<u32>> = Vec::new(); // 0 -> AAdd, 1 -> ASub, 2 -> AMul
-    
+
     for (i, opcode) in circuit.opcodes.iter().enumerate() {
         println!("Opcode {}: {:?}", i, opcode);
 
@@ -116,10 +123,10 @@ fn bristol_translator<F: AcirField>(circuit: &Circuit<F>) -> BristolCircuit {
 
                         gate.push(temp_vec);
                     }
-                    _ => { }
+                    _ => {}
                 }
             }
-            _ => { }
+            _ => {}
         }
     }
     // println!("{:?}", gate);
@@ -160,16 +167,17 @@ fn bristol_translator<F: AcirField>(circuit: &Circuit<F>) -> BristolCircuit {
         let mut op_gate = String::new();
         if element[3] == 0 {
             op_gate = "AAdd".to_string();
-        }
-        else if element[3] == 1 {
+        } else if element[3] == 1 {
             op_gate = "ASub".to_string();
-        }
-        else if element[3] == 2 {
+        } else if element[3] == 2 {
             op_gate = "AMul".to_string();
         }
 
         add_gates.push(Gate {
-            inputs: vec![element[0].try_into().unwrap(), element[1].try_into().unwrap()],
+            inputs: vec![
+                element[0].try_into().unwrap(),
+                element[1].try_into().unwrap(),
+            ],
             outputs: vec![element[2].try_into().unwrap()],
             op: op_gate,
         });
@@ -186,7 +194,19 @@ fn bristol_translator<F: AcirField>(circuit: &Circuit<F>) -> BristolCircuit {
     }
 }
 
-fn main() {
+fn load_circuit_from_json(path: &str) -> Result<Circuit<FieldElement>, Box<dyn std::error::Error>> {
+    let json_str = fs::read_to_string(path)?;
+    let circuit: Circuit<FieldElement> = serde_json::from_str(&json_str)?;
+    Ok(circuit)
+}
+
+fn save_circuit_to_json(path: &str, circuit: &Circuit<FieldElement>) -> Result<(), Box<dyn std::error::Error>> {
+    let json = serde_json::to_string_pretty(&circuit)?;
+    write(path, json)?;
+    Ok(())
+}
+
+fn main() ->  Result<(), Box<dyn std::error::Error>>  {
     const BITS_PER_NUM: u32 = 64;
 
     // Define witness ranges for each operand and result for three operations
@@ -259,22 +279,24 @@ fn main() {
         assert_messages: Vec::new(),
     };
 
-    // println!("\nACIR Circuit:\n{}", circuit);
+    println!("\nACIR Circuit:\n{}", circuit.to_string());
+    save_circuit_to_json("circuit_acir.json", &circuit)?;
+    let circuit2 = load_circuit_from_json("circuit_acir.json")?; 
 
-    let arith_circuit = bristol_translator(&circuit);
+
+    let arith_circuit = bristol_translator(&circuit2);
 
     let circuit_str = arith_circuit.get_bristol_string().unwrap();
     let circuit_info: CircuitInfo = arith_circuit.info;
     println!("{:?}", circuit_info);
+    let circuit_info_string = serde_json::to_string(&circuit_info)?;
+    let mut file = File::create("circuit_info.txt").unwrap();
+    file.write_all(circuit_info_string.as_bytes()).unwrap();
 
-    let new_arith_circuit = BristolCircuit::read_info_and_bristol(&circuit_info, &mut Cursor::new(circuit_str.clone())).unwrap();
+    let new_arith_circuit =
+        BristolCircuit::read_info_and_bristol(&circuit_info, &mut Cursor::new(circuit_str.clone()))
+            .unwrap();
 
-    // let circuit_file = File::open("src/circuit.txt").unwrap();
-
-    // println!("{:?}", BufReader::new(circuit_file));
-
-    // let arith_circuit =
-    //     BristolCircuit::read_info_and_bristol(&circuit_info, &mut BufReader::new(circuit_file)).unwrap();
 
     let bool_circuit = boolify(&new_arith_circuit, BITS_PER_NUM.try_into().unwrap());
 
@@ -285,5 +307,8 @@ fn main() {
     let _ = file.expect("REASON").write_all(file_str.as_bytes());
 
     let mut arith_file = File::create("arith-Bristol.txt");
-    let _ = arith_file.expect("REASON").write_all(circuit_str.as_bytes());
+    let _ = arith_file
+        .expect("REASON")
+        .write_all(circuit_str.as_bytes());
+    Ok(())
 }
